@@ -1,1 +1,194 @@
+// ==UserScript==
+// @name         Bỏ qua thông báo vip và hiển thị phụ đề
+// @namespace    https://toomva.com/index.php/
+// @version      1.1.0
+// @description  Bỏ qua thông báo vip và hiển thị phụ đề
+// @match        https://toomva.com/*
+// @match        https://www.toomva.com/*
+// @match        https://toomva.com/index.php/*
+// @run-at       document-start
+// @sandbox      raw
+// @grant        none
+// @noframes
+// ==/UserScript==
 
+(() => {
+  "use strict";
+
+  const TAG = "[Toomva]";
+  if (window.__toomvaBilingualLoaded) return;
+  window.__toomvaBilingualLoaded = true;
+
+  // 1. Đặt trạng thái VIP trước khi trình phát khởi tạo.
+  const descriptor = Object.getOwnPropertyDescriptor(window, "vip");
+
+  if (!descriptor || descriptor.configurable) {
+    Object.defineProperty(window, "vip", {
+      configurable: true,
+      enumerable: true,
+      get: () => 1,
+      set: () => {}
+    });
+  } else {
+    window.vip = 1;
+    console.warn(TAG, "Script khởi chạy muộn. Nếu còn lỗi, tải lại trang.");
+  }
+
+  // 2. Dùng enpath/vipath của từng trang, không cố định URL tập phim.
+  let timer;
+  let attempts = 0;
+  let rebuilt = false;
+  let oldTracks = [];
+  let resumeAfterRepair = false;
+
+  const cuesOf = track => Array.from(track?.cues || []);
+
+  const hasVipCue = track =>
+    cuesOf(track).some(cue =>
+      /mua-vip|Đăng ký VIP/i.test(cue.text)
+    );
+
+  function check() {
+    if (++attempts > 300) {
+      clearInterval(timer);
+
+      if (window.enpath) {
+        console.warn(
+          TAG,
+          "Chưa nhận đủ phụ đề sau 60 giây. Kiểm tra request trong Network."
+        );
+      }
+      return;
+    }
+
+    const player = window.video || document.querySelector("video");
+
+    if (
+      !player ||
+      !window.enpath ||
+      typeof window.sub !== "function"
+    ) {
+      return;
+    }
+
+    const currentTracks = [
+      window.track,
+      window.track2,
+      window.track3
+    ].filter(Boolean);
+
+    // 3. Nếu trang đã dựng phụ đề chứa thông báo VIP, tải lại một lần.
+    if (!rebuilt && currentTracks.some(hasVipCue)) {
+      rebuilt = true;
+      oldTracks = currentTracks;
+
+      window.vip = 1;
+      resumeAfterRepair = !player.paused;
+
+      // Handler pause gốc của trang xóa timer giới hạn.
+      player.pause();
+
+      if (Array.isArray(window.enForCopy)) {
+        window.enForCopy.length = 0;
+      }
+
+      if (Array.isArray(window.viForCopy)) {
+        window.viForCopy.length = 0;
+      }
+
+      window.sub(window.enpath, window.vipath || "");
+      return;
+    }
+
+    const english = window.track;
+    const vietnamese = window.track2;
+    const bilingual = window.track3;
+    const hasVietnamese = Boolean(window.vipath);
+    const chosen = hasVietnamese ? bilingual : english;
+
+    // 4. Chờ track mới có dữ liệu trước khi thay track đang dùng.
+    if (
+      !chosen ||
+      oldTracks.includes(chosen) ||
+      !cuesOf(english).length
+    ) {
+      return;
+    }
+
+    if (
+      hasVietnamese &&
+      (!cuesOf(vietnamese).length || !cuesOf(bilingual).length)
+    ) {
+      return;
+    }
+
+    if (hasVipCue(chosen)) return;
+    if (!document.querySelector(".scroll-sub .sub-line")) return;
+
+    // 5. Bật song ngữ trên trình phát gốc.
+    oldTracks.forEach(track => {
+      track.mode = "disabled";
+    });
+
+    [english, vietnamese, bilingual]
+      .filter(Boolean)
+      .forEach(track => {
+        track.mode = "hidden";
+      });
+
+    chosen.mode = "showing";
+
+    const radio = document.querySelector(
+      hasVietnamese ? "#cs_4" : "#cs_2"
+    );
+
+    if (radio) radio.checked = true;
+
+    // 6. Đóng riêng popup hết thời gian xem thử nếu còn mở.
+    const alert = Array.from(
+      document.querySelectorAll(".content_alert_all")
+    ).find(element =>
+      element.textContent.includes("Đã hết 5 phút xem thử")
+    );
+
+    const modal = alert?.closest(".modal");
+
+    if (modal && window.jQuery?.fn?.modal) {
+      window.jQuery(modal).modal("hide");
+    }
+
+    // Hoàn tất: không ép chế độ phụ đề liên tục.
+    clearInterval(timer);
+
+    console.info(TAG, "Phụ đề sẵn sàng:", {
+      english: cuesOf(english).length,
+      vietnamese: cuesOf(vietnamese).length,
+      mode: hasVietnamese ? "Anh–Việt" : "Anh"
+    });
+
+    if (resumeAfterRepair) {
+      player.play().catch(() => {
+        console.info(TAG, "Bấm Play để phát tiếp.");
+      });
+    }
+  }
+
+  function start() {
+    timer = setInterval(() => {
+      try {
+        check();
+      } catch (error) {
+        clearInterval(timer);
+        console.error(TAG, error);
+      }
+    }, 200);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start, {
+      once: true
+    });
+  } else {
+    start();
+  }
+})();
